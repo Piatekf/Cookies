@@ -6,6 +6,7 @@ import json
 import os
 import time
 import csv
+from tqdm import tqdm
 start_time = time.time()
 
 def check_cookies_for_ga(cookie_array):
@@ -16,8 +17,8 @@ def check_cookies_for_ga(cookie_array):
         if re.search(regex_pattern, cookie['name'], re.IGNORECASE):
             has_ga_cookie = True
             break
-
     return has_ga_cookie
+
 async def search_for_code(source_code):
     patterns = {
         'phone': r'<a[^>]*?href="(?:tel|phone):([^"]+)">',
@@ -65,7 +66,7 @@ async def search_for_code(source_code):
     }
     for key,val in patterns.items():
         match = re.search(val, source_code)
-        
+
         if match:
             if key == 'phone' or key == 'email' or key == 'facebook' or key == 'instagram' or key == 'linkedin':
                 results[key] = match.group(1)
@@ -74,11 +75,11 @@ async def search_for_code(source_code):
         else:
             if key == 'shop':
                 break
-    
-        
+
+
     return results
 
-            
+
 
 async def to_csv(url_obj):
     with open("all.csv", mode="a", newline="", encoding="utf-8") as file:
@@ -93,9 +94,30 @@ async def to_csv(url_obj):
 async def simulate_user_behaviour(page):
     await page.evaluate('window.scrollBy(0, 500)')
     await page.wait_for_timeout(2000)
-    
-    await page.evaluate('window.scrollTo(0, 0)')
 
+    await page.evaluate('window.scrollTo(0, 0)')
+async def search_for_phone_and_email(source_code):
+    phone_pattern= r'<a[^>]*?href="(?:tel|phone):([^"]+)">'
+    email_pattern =  r'<a[^>]*?href="mailto:([^"]+)">'
+    match_phone = re.search(phone_pattern, source_code)
+    match_email = re.search(email_pattern, source_code)
+    phone = None
+    email = None
+    if match_email:
+        email = match_email.group(1)
+
+    if match_phone:
+        phone = match_phone.group(1)
+    return {
+        'phone': phone,
+        'email': email
+    }
+async def goto_contact_page(contact_page,injected_code):
+    await asyncio.sleep(2)
+    contact_code = await contact_page.content()
+    contact_phone = await search_for_phone_and_email(contact_code)
+    injected_code['phone'] = contact_phone['phone']
+    injected_code['email'] = contact_phone['email']
 async def open_url(url, url_list):
     try:
         async with async_playwright() as playwright:
@@ -104,7 +126,7 @@ async def open_url(url, url_list):
             page = await context.new_page()
             await page.goto(url)
             await simulate_user_behaviour(page)
-            print(url+' is processing...')
+            # print(url+' is processing...')
             await asyncio.sleep(2)
 
 
@@ -122,9 +144,21 @@ async def open_url(url, url_list):
             cookies = await page.context.cookies()
 
             injected_code = await search_for_code(source_code)
+            # check if phone is none, if it is then go to contact page and get phone and email
+            if injected_code['phone'] == None:
+                contact_page = await context.new_page()
+                response = await contact_page.goto(url+'/kontakt')
+                if response.status == 200:
+                    await goto_contact_page(contact_page,injected_code)
+
+                else:
+                    response = await contact_page.goto(url+'/contact')
+                    if response.status == 200:
+                        await goto_contact_page(contact_page,injected_code)
+
+
 
             url_obj = {
-                'id': 1,
                 'name': url,
                 'third_part_domain': domain,
                 'cookies': cookies,
@@ -146,7 +180,7 @@ async def open_url(url, url_list):
             await to_csv(url_obj)
             regex = r"https?://(?:www\.)?([^\/]+)\.[^\/]+"
             match = re.search(regex, url)
-            
+
             if match:
                 folder = match.group(1)
             if not os.path.exists('urls/'+folder):
@@ -167,25 +201,25 @@ async def open_url(url, url_list):
             mobile_browser = await playwright.chromium.launch()
             mobile_context = await mobile_browser.new_context(**iphone13,)
             mobile_page = await mobile_context.new_page()
-        
+
             await mobile_page.goto(url)
             await simulate_user_behaviour(mobile_page)
-            print(url+' mobile is processing...')
+            # print(url+' mobile is processing...')
             await asyncio.sleep(2)
 
             mobile_filename = 'mobile.png'
             mobile_screenshot_path =os.path.join('urls',folder,mobile_filename)
             await mobile_page.screenshot(path=mobile_screenshot_path)
-            print(url+' mobile is done!')
+            # print(url+' mobile is done!')
             await mobile_browser.close()
 
             # write to json
             with open(json_path, 'w') as json_file:
                 json.dump(url_obj, json_file)
-            print(url+' is done!')
+            # print(url+' is done!')
             return url
     except Exception as e:
-        print('Błąd! '+url)
+        # print('Błąd! ' + url)
         with open('pominiete2.txt', 'a') as file:
             file.write(url + '\n')
 
@@ -194,10 +228,11 @@ async def main():
     with open('adresy.txt', 'r') as file:
         urls = [line.strip() for line in file if line.strip()]
 
-    max_concurrent_windows = 8
-    url_list = []  
+    max_concurrent_windows = 5
+    url_list = []
     open_windows=[]
 
+    progress_bar = tqdm(total=len(urls), desc="Postęp")
     for url in urls:
         while len(open_windows) >= max_concurrent_windows:
             open_windows = [window for window in open_windows if not window.done()]
@@ -205,8 +240,8 @@ async def main():
             await asyncio.sleep(0.1)
         window = asyncio.create_task(open_url(url,url_list))
         open_windows.append(window)
-
+        progress_bar.update(1)
     await asyncio.gather(*open_windows)
-
+    progress_bar.close()
 asyncio.run(main())
 print("it took: "+str((time.time()-start_time)/60))
